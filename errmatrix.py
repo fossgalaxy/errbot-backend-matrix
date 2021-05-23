@@ -87,9 +87,13 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
         self._client = client
 
     def join(self, username: str = None, password: str = None) -> None:
+        # TODO handle async
+        #self._client.room_leave( self.mxcid )
         pass
 
     def leave(self, reason: str = None) -> None:
+        # TODO handle async
+        #self._client.room_leave( self.mxcid )
         pass
 
     def create(self) -> None:
@@ -99,7 +103,7 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
         pass
 
     def exists(self) -> bool:
-        return False
+        return self.joined()
 
     def joined(self) -> bool:
         return self._room != None
@@ -108,9 +112,9 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
     def topic(self) -> str:
         if not self.joined():
             log.warn("tried to ask for topic for room we're not in")
-            return None # contract error - mucnotjoinederror isn't a thing >.<
+            return "" # contract error - mucnotjoinederror isn't a thing >.<
 
-        return ""
+        return self._room.topic
 
     @topic.setter
     def topic(self, topic: str) -> None:
@@ -136,7 +140,6 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
             return self._room.display_name
         else:
             return self._mxcid
-
 
 class MatrixBackendAsync(object):
     """Async-native backend code"""
@@ -170,7 +173,8 @@ class MatrixBackendAsync(object):
 
         msg = Message(event.body)
         msg.frm = ErrMatrixRoomOccupant( event.sender, room.room_id )
-        msg.to = ErrMatrixRoom( room.room_id )
+        msg.to = ErrMatrixRoom( room.room_id, room, self._client )
+
         self._annotate_event( event, msg.extras )
         self._bot.callback_message( msg )
 
@@ -241,7 +245,7 @@ class MatrixBackend(ErrBot):
         await self._client.sync(30000)
 
         self._async = MatrixBackendAsync(self, self._client)
-        self.identity = None
+        self.identity = self._client.user_id
 
         log.debug("bot now in event loop - waiting on messages")
         self.connect_callback()
@@ -268,6 +272,9 @@ class MatrixBackend(ErrBot):
     @property
     def mode(self):
         return 'matrix'
+
+    def is_from_self(self, msg: Message) -> bool:
+        return msg.frm.person == self.identity
 
     def query_room(self, room: str):
         log.info( f"{self._client.rooms.keys()}" )
