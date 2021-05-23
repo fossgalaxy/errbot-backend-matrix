@@ -20,6 +20,7 @@ from errbot.backends.base import (
     Identifier
 )
 from errbot.core import ErrBot
+from errbot.rendering import xhtml
 
 log = logging.getLogger(__name__)
 
@@ -32,9 +33,6 @@ except ImportError:
             "You can do `pip install -r requirements.txt` to install it"
     )
     sys.exit(1)
-
-# markdown support
-from markdown import Markdown
 
 class ErrMatrixIdentifier(Identifier):
     pass
@@ -140,6 +138,55 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
             return self._mxcid
 
 
+class MatrixBackendAsync(object):
+    """Async-native backend code"""
+
+    def __init__(self, bot, client):
+        self._bot = bot
+        self._client = client
+        self._md = xhtml()
+
+        # register callbacks
+        self._client.add_event_callback( self.on_message, events.room_events.RoomMessageText )
+        self._client.add_event_callback( self.on_invite, events.invite_events.InviteEvent )
+
+    def _format(self, msg):
+        """Inject the HMTL version of a plain message"""
+        if msg['msgtype'] == 'm.text' and 'format' not in msg:
+            msg['format'] ='org.matrix.custom.html'
+            msg['formatted_body'] = self._md.convert( msg['body'] )
+        return msg
+
+    def _annotate_event(self, event: events.room_events.Event, extras: dict):
+        extras['event_id'] = event.event_id
+        extras['sender'] = event.sender
+        extras['timestamp'] = event.server_timestamp
+        extras['decypted'] = event.decrypted
+        extras['verified'] = event.verified
+
+
+    async def on_message(self, room, event: events.room_events.RoomMessageText):
+        """Callback for handling matrix messages"""
+
+        msg = Message(event.body)
+        msg.frm = ErrMatrixRoomOccupant( event.sender, room.room_id )
+        msg.to = ErrMatrixRoom( room.room_id )
+        self._annotate_event( event, msg.extras )
+        self._bot.callback_message( msg )
+
+    async def on_invite(self, room, event: events.invite_events.InviteEvent) -> None:
+        """Callback for handling room invites"""
+        await self._client.join( room.room_id )
+
+    async def send_message(self, msg: Message) -> None:
+        """Send a errbot-style message to matrix"""
+        body = self._format( { 'msgtype': 'm.text', 'body': msg.body } )
+        await self._client.room_send( 
+                room_id=msg.to,
+                message_type='m.room.message',
+                content = body
+            )
+
 class MatrixBackend(ErrBot):
 
     def __init__(self, config):
@@ -157,20 +204,13 @@ class MatrixBackend(ErrBot):
         self.token = identity.get('token', None)
         self.device_id = identity.get('device_id', None)
 
-        self._md = Markdown()
         self._client = None
         self._ready = False
+        self._async = None
 
     def serve_once(self):
         self.loop = asyncio.get_event_loop()
         self.loop.run_until_complete(self._matrix_loop())
-
-    def _format(self, msg):
-        """Inject the HMTL version of a plain message"""
-        if msg['msgtype'] == 'm.text' and 'format' not in msg:
-            msg['format'] ='org.matrix.custom.html'
-            msg['formatted_body'] = self._md.convert( msg['body'] )
-        return msg
 
     async def _matrix_loop(self) -> None:
         log.info("Matrix main loop started")
@@ -200,27 +240,12 @@ class MatrixBackend(ErrBot):
         # sync so we don't get the stuff from history
         await self._client.sync(30000)
 
-        # up to date, now things can happen
-        self._client.add_event_callback( self.message_callback, RoomMessageText )
-        self._client.add_event_callback( self._room_invite, events.invite_events.InviteEvent )
-
+        self._async = MatrixBackendAsync(self, self._client)
         self.identity = None
-        self.connect_callback()
 
         log.debug("bot now in event loop - waiting on messages")
+        self.connect_callback()
         await self._client.sync_forever(timeout=30000)
-
-    async def message_callback(self, room, event) -> None:
-        log.info(f"Got message from {room.room_id}: {event.body}")
-
-        msg = Message(event.body)
-        msg.frm = ErrMatrixRoomOccupant( event.sender, room.room_id )
-        msg.to = ErrMatrixRoom( room.room_id )
-        self.callback_message( msg )
-
-    async def _room_invite(self, room, event) -> None:
-        log.info(f"Got room invite {room} via {event.sender}")
-        await self._client.join( room.room_id )
 
     def build_identifier(self, txt):
         pass
@@ -238,18 +263,7 @@ class MatrixBackend(ErrBot):
 
     def send_message(self, msg: Message):
         super().send_message(msg)
-        asyncio.run_coroutine_threadsafe( self._mtx_send(msg), loop=self.loop )
-
-    async def _mtx_send(self, msg: Message):
-        log.debug("trying to send message to matrix")
-        body = self._format( { 'msgtype': 'm.text', 'body': msg.body } )
-
-        await self._client.room_send( 
-                room_id=msg.to,
-                message_type='m.room.message',
-                content = body
-            )
-        log.debug("done")
+        asyncio.run_coroutine_threadsafe( self._async.send_message(msg), loop=self.loop )
 
     @property
     def mode(self):
@@ -257,7 +271,6 @@ class MatrixBackend(ErrBot):
 
     def query_room(self, room: str):
         log.info( f"{self._client.rooms.keys()}" )
-
         if room not in self._client.rooms:
             raise RoomDoesNotExistError()
         return ErrMatrixRoom( room, self._client.rooms[room] )
