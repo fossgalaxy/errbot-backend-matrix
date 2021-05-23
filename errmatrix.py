@@ -39,8 +39,9 @@ class ErrMatrixIdentifier(Identifier):
 
 class ErrMatrixPerson(Person):
 
-    def __init__(self, mxcid=None):
+    def __init__(self, mxcid=None, profile=None):
         self._mxcid = mxcid
+        self._profile = profile
 
     @property
     def person(self) -> str:
@@ -52,7 +53,7 @@ class ErrMatrixPerson(Person):
 
     @property
     def nick(self) -> str:
-        return self._mxcid
+        return self._mxcid.split(":")[0][1:]
 
     @property
     def aclattr(self) -> str:
@@ -60,17 +61,41 @@ class ErrMatrixPerson(Person):
 
     @property
     def fullname(self) -> str:
-        return "Matrix User" # TODO
+        if self._profile:
+            return self._profile.get('name', 'Matrix User')
+        else:
+            return "Matrix User"
 
     def __str__(self):
         return self.nick
 
-class ErrMatrixRoomOccupant(ErrMatrixPerson, RoomOccupant):
+class ErrMatrixRoomOccupant(Person, RoomOccupant):
 
-    def __init__(self, user_id, room_id, room=None):
-        super().__init__(user_id)
+    def __init__(self, user: ErrMatrixPerson, room_id, room=None):
+        super().__init__()
+        self._user = user
         self._room = room_id
         self._roomObj = room
+
+    @property
+    def person(self) -> str:
+        return self._user.person
+
+    @property
+    def client(self) -> str:
+        return self._user.client
+
+    @property
+    def nick(self) -> str:
+        return self._user.nick
+
+    @property
+    def aclattr(self) -> str:
+        return self._user.aclattr
+
+    @property
+    def fullname(self) -> str:
+        return self._user.fullname
 
     @property
     def room(self) -> any:
@@ -78,6 +103,44 @@ class ErrMatrixRoomOccupant(ErrMatrixPerson, RoomOccupant):
             return ErrMatrixRoom( self._room )
         else:
             return self._roomObj
+
+    def __str__(self):
+        return self.fullname
+
+class ErrMatrixPrivateRoom(Person):
+    """Repesentation of a user in a private room.
+       
+       This is a little nuts - in Matrix it's really a room, but we
+       hide this from the bot and tell it that it's a person to stop
+       it yelling at us"""
+
+    def __init__(self, user: ErrMatrixPerson, room: ErrMatrixRoom):
+        super().__init__()
+        self._user = user
+        self._roomObj = room
+
+    @property
+    def person(self) -> str:
+        return self._user.person
+
+    @property
+    def client(self) -> str:
+        return self._user.client
+
+    @property
+    def nick(self) -> str:
+        return self._user.nick
+
+    @property
+    def aclattr(self) -> str:
+        return self._user.aclattr
+
+    @property
+    def fullname(self) -> str:
+        return str(self._roomObj)
+
+    def __str__(self) -> str:
+        return self.fullname
 
 
 class ErrMatrixRoom(ErrMatrixIdentifier, Room):
@@ -167,13 +230,25 @@ class MatrixBackendAsync(object):
         extras['decypted'] = event.decrypted
         extras['verified'] = event.verified
 
-
     async def on_message(self, room, event: events.room_events.RoomMessageText):
         """Callback for handling matrix messages"""
 
+        log.info("got a message")
+
         msg = Message(event.body)
-        msg.frm = ErrMatrixRoomOccupant( event.sender, room.room_id )
-        msg.to = ErrMatrixRoom( room.room_id, room, self._client )
+
+        # the room which the message was sent in
+        err_room = ErrMatrixRoom( room.room_id, room, self._client )
+
+        profile = await self.get_profile( event.sender )
+        sender = ErrMatrixPerson( event.sender, profile )
+        msg.frm = ErrMatrixRoomOccupant( sender, room.room_id )
+
+        if room.is_group:
+            # pretend a room is a person to fool errbot
+            msg.to = ErrMatrixPrivateRoom( sender, err_room ) 
+        else:
+            msg.to = err_room
 
         self._annotate_event( event, msg.extras )
         self._bot.callback_message( msg )
@@ -181,6 +256,18 @@ class MatrixBackendAsync(object):
     async def on_invite(self, room, event: events.invite_events.InviteEvent) -> None:
         """Callback for handling room invites"""
         await self._client.join( room.room_id )
+
+    async def get_profile(self, user) -> dict:
+        response = await self._client.get_profile( user )
+        if isinstance(response, responses.ProfileGetResponse):
+            profile = {
+                'name': response.displayname,
+                'avatar': response.avatar_url,
+                'extras': response.other_info
+            }
+            return profile
+        else:
+            return {}
 
     async def send_message(self, msg: Message) -> None:
         """Send a errbot-style message to matrix"""
@@ -252,6 +339,11 @@ class MatrixBackend(ErrBot):
         await self._client.sync_forever(timeout=30000)
 
     def build_identifier(self, txt):
+        if txt[0] == '@':
+            future = asyncio.run_coroutine_threadsafe( self._async.get_profile(txt), loop=self.loop )
+            return ErrMatrixPerson( txt, future.result() )
+        elif txt[0] == '!':
+            return ErrMatrixRoom( txt, self._client.rooms[txt] )
         pass
 
     def build_reply(self, msg, text=None, private=False, threaded=False):
@@ -280,7 +372,7 @@ class MatrixBackend(ErrBot):
         log.info( f"{self._client.rooms.keys()}" )
         if room not in self._client.rooms:
             raise RoomDoesNotExistError()
-        return ErrMatrixRoom( room, self._client.rooms[room] )
+        return self.build_identifier( room )
 
     async def _mtx_rooms(self) -> list:
         resp = await self._client.joined_rooms()
@@ -289,10 +381,8 @@ class MatrixBackend(ErrBot):
             rooms = []
             for room_id in resp.rooms:
                 mtx_room = self._client.rooms[room_id]
-
-                # groups == 'DMs'
                 if not mtx_room.is_group:
-                    rooms.append( ErrMatrixRoom(room_id, mtx_room) )
+                    rooms.append( self.build_identifier(room_id) )
             return rooms
         else:
             return []
