@@ -166,8 +166,14 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
             return None # contract error - mucnotjoinederror isn't a thing >.<
         
         people = list()
-        for uid in self._room.users:
-            people.append( ErrMatrixRoomOccupant(uid, self._id, self ) )
+        for user in self._room.users.values():
+            profile = {
+                'name': user.display_name,
+                'avatar': user.avatar_url,
+                'user': user
+            }
+            sender = ErrMatrixPerson( user.user_id, profile )
+            people.append( ErrMatrixRoomOccupant( sender, self._id, self ) )
         return people
 
     def invite(self, *args) -> None:
@@ -176,7 +182,7 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
 
     def __str__(self):
         if self._room:
-            return self._room.display_name
+            return "{} ({})".format( self._room.display_name, self._room.machine_name )
         else:
             return self._id
 
@@ -355,8 +361,13 @@ class MatrixBackend(ErrBot):
             future = asyncio.run_coroutine_threadsafe( self._async.get_profile(txt), loop=self.loop )
             return ErrMatrixPerson( txt, future.result() )
         elif txt[0] == '!':
-            return ErrMatrixRoom( txt, self._client.rooms[txt] )
-        pass
+            if txt in self._client.rooms:
+                return ErrMatrixRoom( txt, self._client.rooms[txt] )
+        elif txt[0] == '#':
+            for room in self._client.rooms.values():
+                if room.canonical_alias == txt:
+                    return ErrMatrixRoom( txt, room )
+        return None
 
     def build_reply(self, msg, text=None, private=False, threaded=False):
         log.info(f"Tried to build reply: {msg} - {text} - {private} - {threaded}")
@@ -383,8 +394,6 @@ class MatrixBackend(ErrBot):
 
     def query_room(self, room: str):
         log.info( f"{self._client.rooms.keys()}" )
-        if room not in self._client.rooms:
-            raise RoomDoesNotExistError()
         return self.build_identifier( room )
 
     async def _mtx_rooms(self) -> list:
