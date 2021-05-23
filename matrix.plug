@@ -1,0 +1,6 @@
+[Core]
+Name = Matrix
+Module = errmatrix
+
+[Documentation]
+Description = This is a backend implementation for Matrix.
