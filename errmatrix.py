@@ -35,17 +35,25 @@ except ImportError:
     sys.exit(1)
 
 class ErrMatrixIdentifier(Identifier):
-    pass
 
-class ErrMatrixPerson(Person):
+    def __init__(self, mxid: str):
+        self._id = mxid
 
-    def __init__(self, mxcid=None, profile=None):
-        self._mxcid = mxcid
+    def __eq__(self, other):
+        return self._id == other._id
+
+    def __str__(self):
+        return self._id
+
+class ErrMatrixPerson(ErrMatrixIdentifier, Person):
+
+    def __init__(self, mxid=None, profile=None):
+        super().__init__( mxid )
         self._profile = profile
 
     @property
     def person(self) -> str:
-        return self._mxcid
+        return self._id
 
     @property
     def client(self) -> str:
@@ -53,11 +61,11 @@ class ErrMatrixPerson(Person):
 
     @property
     def nick(self) -> str:
-        return self._mxcid.split(":")[0][1:]
+        return self._id.split(":")[0][1:]
 
     @property
     def aclattr(self) -> str:
-        return self._mxcid
+        return self._id
 
     @property
     def fullname(self) -> str:
@@ -69,13 +77,14 @@ class ErrMatrixPerson(Person):
     def __str__(self):
         return self.nick
 
-class ErrMatrixRoomOccupant(Person, RoomOccupant):
+class ErrMatrixRoomOccupant(ErrMatrixIdentifier, Person, RoomOccupant):
 
-    def __init__(self, user: ErrMatrixPerson, room_id, room=None):
-        super().__init__()
+    def __init__(self, user: ErrMatrixPerson, room_id, room=None, mxUser = None):
+        super().__init__(user._id)
         self._user = user
         self._room = room_id
         self._roomObj = room
+        self.mxUser = mxUser
 
     @property
     def person(self) -> str:
@@ -95,6 +104,8 @@ class ErrMatrixRoomOccupant(Person, RoomOccupant):
 
     @property
     def fullname(self) -> str:
+        if self.mxUser:
+            return self.mxUser.name
         return self._user.fullname
 
     @property
@@ -107,45 +118,10 @@ class ErrMatrixRoomOccupant(Person, RoomOccupant):
     def __str__(self):
         return self.fullname
 
-class ErrMatrixPrivateRoom(Person):
-    """Repesentation of a user in a private room.
-       
-       This is a little nuts - in Matrix it's really a room, but we
-       hide this from the bot and tell it that it's a person to stop
-       it yelling at us"""
-
-    def __init__(self, user: ErrMatrixPerson, room: ErrMatrixRoom):
-        super().__init__()
-        self._user = user
-        self._roomObj = room
-
-    @property
-    def person(self) -> str:
-        return self._user.person
-
-    @property
-    def client(self) -> str:
-        return self._user.client
-
-    @property
-    def nick(self) -> str:
-        return self._user.nick
-
-    @property
-    def aclattr(self) -> str:
-        return self._user.aclattr
-
-    @property
-    def fullname(self) -> str:
-        return str(self._roomObj)
-
-    def __str__(self) -> str:
-        return self.fullname
-
 
 class ErrMatrixRoom(ErrMatrixIdentifier, Room):
-    def __init__(self, mxcid = None, lib_room=None, client=None):
-        self._mxcid = mxcid
+    def __init__(self, mxid: str = None, lib_room=None, client=None):
+        super().__init__(mxid)
         self._room = lib_room
         self._client = client
 
@@ -191,7 +167,7 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
         
         people = list()
         for uid in self._room.users:
-            people.append( ErrMatrixRoomOccupant(uid, self._mxcid, self ) )
+            people.append( ErrMatrixRoomOccupant(uid, self._id, self ) )
         return people
 
     def invite(self, *args) -> None:
@@ -202,7 +178,43 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
         if self._room:
             return self._room.display_name
         else:
-            return self._mxcid
+            return self._id
+
+class ErrMatrixPrivateRoom(ErrMatrixIdentifier, Person):
+    """Repesentation of a user in a private room.
+       
+       This is a little nuts - in Matrix it's really a room, but we
+       hide this from the bot and tell it that it's a person to stop
+       it yelling at us"""
+
+    def __init__(self, user: ErrMatrixPerson, room: ErrMatrixRoom):
+        super().__init__(room._id)
+        self._user = user
+        self._roomObj = room
+
+    @property
+    def person(self) -> str:
+        return self._user.person
+
+    @property
+    def client(self) -> str:
+        return self._user.client
+
+    @property
+    def nick(self) -> str:
+        return self._user.nick
+
+    @property
+    def aclattr(self) -> str:
+        return self._user.aclattr
+
+    @property
+    def fullname(self) -> str:
+        return str(self._roomObj)
+
+    def __str__(self) -> str:
+        return self.fullname
+
 
 class MatrixBackendAsync(object):
     """Async-native backend code"""
@@ -349,8 +361,9 @@ class MatrixBackend(ErrBot):
     def build_reply(self, msg, text=None, private=False, threaded=False):
         log.info(f"Tried to build reply: {msg} - {text} - {private} - {threaded}")
         response = self.build_message(text)
-        response.to = msg.frm._room
         response.frm = self.identity
+
+        response.to = msg.frm._room
         return response
 
     def change_presence(self, status: str = '', message: str = ''):
@@ -376,16 +389,15 @@ class MatrixBackend(ErrBot):
 
     async def _mtx_rooms(self) -> list:
         resp = await self._client.joined_rooms()
-        if isinstance(resp, responses.JoinedRoomsResponse):
 
-            rooms = []
+        rooms = []
+        if isinstance(resp, responses.JoinedRoomsResponse):
             for room_id in resp.rooms:
                 mtx_room = self._client.rooms[room_id]
                 if not mtx_room.is_group:
                     rooms.append( self.build_identifier(room_id) )
-            return rooms
-        else:
-            return []
+
+        return rooms
         
     def rooms(self):
         future = asyncio.run_coroutine_threadsafe( self._mtx_rooms(), loop=self.loop )
