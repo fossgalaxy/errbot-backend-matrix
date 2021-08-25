@@ -312,6 +312,9 @@ class MatrixBackend(ErrBot):
         # for token-based login
         self.token = identity.get('token', None)
         self.device_id = identity.get('device_id', None)
+        self.bot_identity = ErrMatrixPerson(
+            identity['username']
+        ) # FIXME should be populated based on whoami
 
         self._client = None
         self._ready = False
