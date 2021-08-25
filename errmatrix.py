@@ -66,7 +66,7 @@ class MatrixPerson(MatrixIdentifier):
 
     @property
     def fullname(self) -> str:
-        pass
+        return self._profile.get("displayname", None)
 
     @property
     def email(self) -> str:
@@ -402,6 +402,9 @@ class MatrixBackend(ErrBot):
                 if room.canonical_alias == txt:
                     return MatrixRoom( txt, room )
         return None
+
+    def build_message(self, txt):
+        return MatrixMessage(body=text)
 
     def build_reply(self,
             msg: backend.Message,
