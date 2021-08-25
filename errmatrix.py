@@ -234,7 +234,7 @@ class MatrixBackendAsync(object):
                 err_room
             )
             self._annotate_event( event, msg.extras )
-            self._bot.callback_message( msg )
+            await self._bot.loop.run_in_executor(None, self._bot.callback_message, msg)
         except Exception as e:
             log.warning("something went wrong processing a message... %s", e)
             import traceback
@@ -297,7 +297,6 @@ class MatrixBackendAsync(object):
         else:
             log.warning("could not create management room: %s", new_room)
             raise Exception("couldn't create management room")
-
 
 
     async def send_message(self, msg: backend.Message) -> None:
