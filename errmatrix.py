@@ -10,22 +10,16 @@ import sys
 import logging
 import asyncio
 
-from errbot.backends.base import (
-    Person,
-    Message,
-    Room,
-    RoomOccupant,
-    RoomDoesNotExistError,
-    Presence,
-    Identifier
-)
+from typing import Any, Optional, List, Dict
+
+import errbot.backends.base as backend
 from errbot.core import ErrBot
 from errbot.rendering import xhtml
 
 log = logging.getLogger(__name__)
 
 try:
-    from nio import AsyncClient, events, responses, MatrixRoom, LoginResponse, RoomMessageText
+    import nio
 except ImportError:
     log.exception("Could not import matrix backend")
     log.fatal(
@@ -34,20 +28,23 @@ except ImportError:
     )
     sys.exit(1)
 
-class ErrMatrixIdentifier(Identifier):
+class MatrixIdentifier(backend.Identifier):
 
     def __init__(self, mxid: str):
         self._id = mxid
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         return self._id == other._id
 
     def __str__(self):
-        return self._id
+        return str(self._id)
 
-class ErrMatrixPerson(ErrMatrixIdentifier, Person):
+class MatrixPerson(MatrixIdentifier):
+    """
+    A matrix user
+    """
 
-    def __init__(self, mxid=None, profile=None):
+    def __init__(self, mxid: str, profile: Any):
         super().__init__( mxid )
         self._profile = profile
 
@@ -57,7 +54,7 @@ class ErrMatrixPerson(ErrMatrixIdentifier, Person):
 
     @property
     def client(self) -> str:
-        return "" # TODO
+        return ""
 
     @property
     def nick(self) -> str:
@@ -69,90 +66,66 @@ class ErrMatrixPerson(ErrMatrixIdentifier, Person):
 
     @property
     def fullname(self) -> str:
-        if self._profile:
-            return self._profile.get('name', 'Matrix User')
-        else:
-            return "Matrix User"
-
-    def __str__(self):
-        return self.nick
-
-class ErrMatrixRoomOccupant(ErrMatrixIdentifier, Person, RoomOccupant):
-
-    def __init__(self, user: ErrMatrixPerson, room_id, room=None, mxUser = None):
-        super().__init__(user._id)
-        self._user = user
-        self._room = room_id
-        self._roomObj = room
-        self.mxUser = mxUser
+        pass
 
     @property
-    def person(self) -> str:
-        return self._user.person
+    def email(self) -> str:
+        pass
 
-    @property
-    def client(self) -> str:
-        return self._user.client
+class MatrixRoom(MatrixIdentifier, backend.Room):
+    """
+    A matrix room
+    """
 
-    @property
-    def nick(self) -> str:
-        return self._user.nick
-
-    @property
-    def aclattr(self) -> str:
-        return self._user.aclattr
-
-    @property
-    def fullname(self) -> str:
-        if self.mxUser:
-            return self.mxUser.name
-        return self._user.fullname
-
-    @property
-    def room(self) -> any:
-        if not self._roomObj:
-            return ErrMatrixRoom( self._room )
-        else:
-            return self._roomObj
-
-    def __str__(self):
-        return self.fullname
-
-
-class ErrMatrixRoom(ErrMatrixIdentifier, Room):
-    def __init__(self, mxid: str = None, lib_room=None, client=None):
+    def __init__(self, mxid: str, client: nio.Client):
         super().__init__(mxid)
-        self._room = lib_room
         self._client = client
 
+        if mxid in self._client.rooms:
+            self._room = self._client.rooms[ mxid ]
+        else:
+            self._room = None
+
     def join(self, username: str = None, password: str = None) -> None:
-        # TODO handle async
-        #self._client.room_leave( self.mxcid )
-        pass
+        if self._client:
+            result = self._client.join( self._id )
+            if isinstance(result, nio.responses.JoinError):
+                raise backend.RoomError(result)
 
     def leave(self, reason: str = None) -> None:
-        # TODO handle async
-        #self._client.room_leave( self.mxcid )
-        pass
+        if self._client:
+            result = self._client.room_leave(self.id)
+            if isinstance(result, nio.responses.RoomLeaveError):
+                raise backend.RoomError(result)
 
     def create(self) -> None:
-        pass
+        result = self._client.room_create()
+        if isinstance(result, nio.responses.RoomCreateError):
+            raise backend.RoomError(result)
 
-    def destory(self) -> None:
-        pass
+    def destroy(self) -> None:
+        result = self._client.room_forget(self._id)
+        if isinstance(result, nio.RoomForgetError):
+            raise backend.RoomError(result)
 
+    @property
+    def is_private(self) -> bool:
+        native_room = self._client.rooms[ self._id ]
+        return native_room.is_group and native_room.member_count == 2
+
+    @property
     def exists(self) -> bool:
-        return self.joined()
+        all_rooms = set( self._client.rooms.keys() )
+        return self._id in all_rooms
 
+    @property
     def joined(self) -> bool:
         return self._room != None
 
     @property
     def topic(self) -> str:
-        if not self.joined():
-            log.warn("tried to ask for topic for room we're not in")
-            return "" # contract error - mucnotjoinederror isn't a thing >.<
-
+        if not self.joined:
+            raise backend.RoomNotJoinedError()
         return self._room.topic
 
     @topic.setter
@@ -160,67 +133,67 @@ class ErrMatrixRoom(ErrMatrixIdentifier, Room):
         pass
 
     @property
-    def occupants(self) -> any:
-        if not self.joined():
-            log.warn("tried to ask for partipants for room we're not in")
-            return None # contract error - mucnotjoinederror isn't a thing >.<
-        
+    def occupants(self) -> List[backend.RoomOccupant]:
+        if not self.joined:
+            raise backend.RoomNotJoinedError()
+
         people = list()
-        for user in self._room.users.values():
-            profile = {
-                'name': user.display_name,
-                'avatar': user.avatar_url,
-                'user': user
-            }
-            sender = ErrMatrixPerson( user.user_id, profile )
-            people.append( ErrMatrixRoomOccupant( sender, self._id, self ) )
+        for user in self._room.users:
+            occupant = MatrixRoomOccupant( user.user_id, self._id, self._id )
+            people.append( occupant )
         return people
 
-    def invite(self, *args) -> None:
-        for user in args:
-            self._client.invite( self._mxcid, user )
+    def invite(self, *args: List[Any]) -> None:
+        for user_id in args:
+            pass
+
+class MatrixRoomOccupant(MatrixPerson, backend.RoomOccupant):
+    """
+    """
+
+    def __init__(self, userid:str, profile: Any, channelid):
+        super().__init__(userid, profile)
+        self._room = channelid
+
+    @property
+    def room(self) -> Any:
+        return self._room
+
+class MatrixMessage(backend.Message):
+
+    def __init__(self,
+            body = "",
+            frm = None,
+            to = None,
+            parent = None,
+            delayed = False,
+            partial = False,
+            extras = None,
+            flow = None):
+        super().__init__(body, frm, to, parent, delayed, partial, extras, flow)
+
+    def clone(self):
+        return MatrixMessage(
+            body=self._body,
+            frm=self._from,
+            to=self._to,
+            parent=self._parent,
+            delayed=self._delayed,
+            partial=self._partial,
+            extras=self._extras,
+            flow=self._flow,
+        )
+
+    @property
+    def is_direct(self):
+        return self.to.is_private
+
+    @property
+    def is_group(self):
+        return not self.is_direct
 
     def __str__(self):
-        if self._room:
-            return "{} ({})".format( self._room.display_name, self._room.machine_name )
-        else:
-            return self._id
-
-class ErrMatrixPrivateRoom(ErrMatrixIdentifier, Person):
-    """Repesentation of a user in a private room.
-       
-       This is a little nuts - in Matrix it's really a room, but we
-       hide this from the bot and tell it that it's a person to stop
-       it yelling at us"""
-
-    def __init__(self, user: ErrMatrixPerson, room: ErrMatrixRoom):
-        super().__init__(room._id)
-        self._user = user
-        self._roomObj = room
-
-    @property
-    def person(self) -> str:
-        return self._user.person
-
-    @property
-    def client(self) -> str:
-        return self._user.client
-
-    @property
-    def nick(self) -> str:
-        return self._user.nick
-
-    @property
-    def aclattr(self) -> str:
-        return self._user.aclattr
-
-    @property
-    def fullname(self) -> str:
-        return str(self._roomObj)
-
-    def __str__(self) -> str:
-        return self.fullname
-
+        return "BLARG"
 
 class MatrixBackendAsync(object):
     """Async-native backend code"""
@@ -229,10 +202,11 @@ class MatrixBackendAsync(object):
         self._bot = bot
         self._client = client
         self._md = xhtml()
+        self._management = dict()
 
-        # register callbacks
-        self._client.add_event_callback( self.on_message, events.room_events.RoomMessageText )
-        self._client.add_event_callback( self.on_invite, events.invite_events.InviteEvent )
+    def attach_callbacks(self):
+        self._client.add_event_callback( self.on_message, nio.events.room_events.RoomMessageText )
+        self._client.add_event_callback( self.on_invite, nio.events.invite_events.InviteEvent )
 
     def _format(self, msg):
         """Inject the HMTL version of a plain message"""
@@ -241,43 +215,39 @@ class MatrixBackendAsync(object):
             msg['formatted_body'] = self._md.convert( msg['body'] )
         return msg
 
-    def _annotate_event(self, event: events.room_events.Event, extras: dict):
+    def _annotate_event(self, event: nio.events.room_events.Event, extras: dict):
         extras['event_id'] = event.event_id
         extras['sender'] = event.sender
         extras['timestamp'] = event.server_timestamp
         extras['decypted'] = event.decrypted
         extras['verified'] = event.verified
 
-    async def on_message(self, room, event: events.room_events.RoomMessageText):
+    async def on_message(self, room, event: nio.events.room_events.RoomMessageText):
         """Callback for handling matrix messages"""
 
-        log.info("got a message")
+        try:
+            log.info("got a message")
+            err_room = MatrixRoom( room.room_id, self._client )
+            msg = MatrixMessage(
+                event.body,
+                MatrixRoomOccupant( event.sender, self, room.room_id ),
+                err_room
+            )
+            self._annotate_event( event, msg.extras )
+            self._bot.callback_message( msg )
+        except Exception as e:
+            log.warning("something went wrong processing a message... %s", e)
+            import traceback
+            track = traceback.format_exc()
+            print(track)
 
-        msg = Message(event.body)
-
-        # the room which the message was sent in
-        err_room = ErrMatrixRoom( room.room_id, room, self._client )
-
-        profile = await self.get_profile( event.sender )
-        sender = ErrMatrixPerson( event.sender, profile )
-        msg.frm = ErrMatrixRoomOccupant( sender, room.room_id )
-
-        if room.is_group:
-            # pretend a room is a person to fool errbot
-            msg.to = ErrMatrixPrivateRoom( sender, err_room ) 
-        else:
-            msg.to = err_room
-
-        self._annotate_event( event, msg.extras )
-        self._bot.callback_message( msg )
-
-    async def on_invite(self, room, event: events.invite_events.InviteEvent) -> None:
+    async def on_invite(self, room, event: nio.events.invite_events.InviteEvent) -> None:
         """Callback for handling room invites"""
         await self._client.join( room.room_id )
 
     async def get_profile(self, user) -> dict:
         response = await self._client.get_profile( user )
-        if isinstance(response, responses.ProfileGetResponse):
+        if isinstance(response, nio.responses.ProfileGetResponse):
             profile = {
                 'name': response.displayname,
                 'avatar': response.avatar_url,
@@ -287,96 +257,159 @@ class MatrixBackendAsync(object):
         else:
             return {}
 
-    async def send_message(self, msg: Message) -> None:
+    async def get_matrix_person(self, mxid: str) -> MatrixPerson:
+        profile = await self.get_profile( mxid )
+        return MatrixPerson( mxid, profile )
+
+    async def get_private_channel(self, user):
+        # FIXME this feels super hacky >.<
+
+        # do we have a cached management room?
+        if user._id in self._management:
+            log.debug("had cached management room: %s", self._management[user._id])
+            return self._management[user._id]
+
+        # if not, we need to try and find a suitable one
+        log.debug("no cached management room, long route")
+
+        try:
+            for (rid, room) in self._client.rooms.items():
+                if not room.is_group or room.member_count != 2:
+                    continue
+
+                if user._id in room.users:
+                    log.debug("found candidate management room, using that.")
+                    self._management[user._id] = room.room_id
+                    return room.room_id
+        except Exception as e:
+            log.debug("EXCEPTION DEEP IN ASYNC CODE! %s", e)
+
+        # no suitable room? make one!
+        log.debug("no suitable room, making new one!")
+        new_room = await self._client.room_create(
+                is_direct = True,
+                invite = [ user._id ]
+        )
+
+        if isinstance(new_room, nio.responses.RoomCreateResponse):
+            self._management[ user._id ] = new_room.room_id
+            return new_room.room_id
+        else:
+            log.warning("could not create management room: %s", new_room)
+            raise Exception("couldn't create management room")
+
+
+
+    async def send_message(self, msg: backend.Message) -> None:
         """Send a errbot-style message to matrix"""
-        body = self._format( { 'msgtype': 'm.text', 'body': msg.body } )
-        await self._client.room_send( 
-                room_id=msg.to,
-                message_type='m.room.message',
-                content = body
-            )
+
+        log.info( "sending message to: %s", msg.to )
+        try:
+            target = msg.to
+            if isinstance( target, str ):
+                target = self._bot.build_identifier( target )
+
+            if isinstance( target, MatrixPerson ):
+                room_target = await self.get_private_channel( msg.to )
+            else:
+                room_target = target._id
+
+            body = self._format( { 'msgtype': 'm.text', 'body': msg.body } )
+            result = await self._client.room_send( 
+                    room_id=room_target,
+                    message_type='m.room.message',
+                    content = body
+                )
+
+            if isinstance(result, nio.responses.RoomSendError):
+                log.warning("message didn't send properly")
+            log.debug(result)
+        except Exception as e:
+            import traceback
+            track = traceback.format_exc()
+            print(track)
+            log.debug("error: %s", e)
+
+    async def whoami(self) -> MatrixPerson:
+        response = await self._client.whoami()
+        if isinstance(response, nio.responses.WhoamiError):
+            raise Exception("error calling whoami")
+
+        self.user_id = response.user_id
+        return await self.get_matrix_person( self.user_id )
 
 class MatrixBackend(ErrBot):
 
     def __init__(self, config):
         super().__init__(config)
 
-        identity = config.BOT_IDENTITY
-        self.homeserver = identity['homeserver']
-        self.user_id = identity['username']
+        self.homeserver = config.BOT_IDENTITY['homeserver']
+        if not self.homeserver.startswith("http://") and not self.homeserver.startswith("https://"):
+            self.homeserver = "https://" + self.homeserver
 
-        # for password-based login
-        self.device = identity.get('device', None)
-        self.password = identity.get('password', None)
+        self.token = config.BOT_IDENTITY['token']
 
         # for token-based login
-        self.token = identity.get('token', None)
-        self.device_id = identity.get('device_id', None)
-        self.bot_identifier = ErrMatrixPerson(
-            identity['username']
-        ) # FIXME should be populated based on whoami
+        if not self.token:
+            log.fatal("Bot didn't have a login token! - you need to give it one or it can't login!")
+            sys.exit(1)
 
+        # variables for matrix library
         self._client = None
-        self._ready = False
         self._async = None
 
     def serve_once(self):
         self.loop = asyncio.get_event_loop()
-        self.loop.run_until_complete(self._matrix_loop())
+        return self.loop.run_until_complete( self._matrix_loop() )
 
-    async def _matrix_loop(self) -> None:
-        log.info("Matrix main loop started")
+    async def _matrix_loop(self) -> bool:
+        try:
+            log.info("Matrix main loop started")
 
-        # fix homeserver address
-        homeserver = self.homeserver
-        if not homeserver.startswith("http://") and not homeserver.startswith("https://"):
-            homeserver = "https://" + homeserver
+            if not self._client: 
+                # login
+                self._client = nio.AsyncClient(self.homeserver)
+                self._client.access_token = self.token
 
-        log.debug("Creating Matrix Client")
-        self._client = AsyncClient(homeserver, self.user_id)
+                # setup async and call whoami
+                self._async = MatrixBackendAsync(self, self._client)
+                self.bot_identifier = await self._async.whoami()
+                self._client.user = self.bot_identifier._id
 
-        if self.token:
-            log.debug("Using token-based login")
-            self._client.access_token = self.token
-            self._client.device_id = self.device_id
-        else:
-            log.debug("Using password-based login")
-            resp = await self._client.login( self.password, device_name = self.device )
-            if (isinstance(resp, LoginResponse)):
-                log.info("logged in using password, please use a token for production use!")
-                log.info(f"in future, use - device_id: {resp.device_id} : token: {resp.access_token}")
-                sys.exit(1)
-            else:
-                log.fatal(f"authentication failed, giving up! {resp}")
+                # sync so we don't get the stuff from history
+                result = await self._client.sync(full_state=True)
+                if isinstance(result, nio.responses.ErrorResponse):
+                    raise ValueError(result)
 
-        # sync so we don't get the stuff from history
-        await self._client.sync(30000)
+                log.debug("bot now in event loop - waiting on messages")
+                self._async.attach_callbacks()
+                self.connect_callback()
 
-        self._async = MatrixBackendAsync(self, self._client)
-        self.identity = self._client.user_id
+            await self._client.sync_forever(timeout=150)
+            return False
+        except (KeyboardInterrupt, StopIteration):
+            self.disconnect_callback()
+            return True
 
-        log.debug("bot now in event loop - waiting on messages")
-        self.connect_callback()
-        await self._client.sync_forever(timeout=30000)
-
-    def build_identifier(self, txt):
+    def build_identifier(self, txt: str):
+        log.debug("getting identifier for: %s", txt) 
         if txt[0] == '@':
-            future = asyncio.run_coroutine_threadsafe( self._async.get_profile(txt), loop=self.loop )
-            return ErrMatrixPerson( txt, future.result() )
+            return MatrixPerson( txt, {} )
         elif txt[0] == '!':
             if txt in self._client.rooms:
-                return ErrMatrixRoom( txt, self._client.rooms[txt] )
+                return MatrixRoom( txt, self._client )
         elif txt[0] == '#':
             for room in self._client.rooms.values():
                 if room.canonical_alias == txt:
-                    return ErrMatrixRoom( txt, room )
+                    return MatrixRoom( txt, room )
         return None
 
-    def build_reply(self, msg, text=None, private=False, threaded=False):
+    def build_reply(self,
+            msg: backend.Message,
+            text:str = None, private: bool = False, threaded: bool = False) -> backend.Message:
         log.info(f"Tried to build reply: {msg} - {text} - {private} - {threaded}")
         response = self.build_message(text)
-        response.frm = self.identity
-
+        response.frm = self.bot_identifier
         response.to = msg.frm._room
         return response
 
@@ -384,16 +417,19 @@ class MatrixBackend(ErrBot):
         log.debug("presence change requested")
         pass
 
-    def send_message(self, msg: Message):
+    def send_message(self, msg: backend.Message):
         super().send_message(msg)
-        asyncio.run_coroutine_threadsafe( self._async.send_message(msg), loop=self.loop )
+        log.info("sending message...")
+        future = asyncio.run_coroutine_threadsafe( self._async.send_message(msg), loop=self.loop )
+        log.info("message submitted, result: %s", future.done)
+#        return future.result()
 
     @property
     def mode(self):
         return 'matrix'
 
-    def is_from_self(self, msg: Message) -> bool:
-        return msg.frm.person == self.identity
+    def is_from_self(self, msg: backend.Message) -> bool:
+        return msg.frm._id == self.bot_identifier._id
 
     def query_room(self, room: str):
         log.info( f"{self._client.rooms.keys()}" )
@@ -403,7 +439,7 @@ class MatrixBackend(ErrBot):
         resp = await self._client.joined_rooms()
 
         rooms = []
-        if isinstance(resp, responses.JoinedRoomsResponse):
+        if isinstance(resp, nio.responses.JoinedRoomsResponse):
             for room_id in resp.rooms:
                 mtx_room = self._client.rooms[room_id]
                 if not mtx_room.is_group:
