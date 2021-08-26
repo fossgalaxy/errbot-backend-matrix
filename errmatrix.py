@@ -173,9 +173,11 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
 
         We consider a room to be private if it contains exactly two people, and it marked as a 'group' room
         (as apposed to a public one)."""
-        if not self._id or self._client:
+        if not self._id or not self._client:
             return False
 
+        log.debug("is a room: %s", self._room.is_group)
+        log.debug("has a member count of : %s", self._room.member_count)
         return self._room.is_group and self._room.member_count == 2
 
     @property
