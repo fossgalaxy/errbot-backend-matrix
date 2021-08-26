@@ -855,9 +855,15 @@ class MatrixBackend(ErrBot):
             msg: backend.Message,
             text:str = None, private: bool = False, threaded: bool = False) -> backend.Message:
         log.info(f"Tried to build reply: {msg} - {text} - {private} - {threaded}")
+
         response = self.build_message(text)
         response.frm = self.bot_identifier
-        response.to = msg.to
+
+        if private and not msg.to.is_private:
+            # if it's private, and the room it's private, redirect to the user's management channel
+            response.to = msg.frm._id
+        else:
+            response.to = msg.to
         return response
 
     def change_presence(self, status: str = '', message: str = ''):
