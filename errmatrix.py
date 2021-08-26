@@ -102,8 +102,10 @@ class MatrixPerson(MatrixIdentifier):
             return emails[0]
 
 class MatrixRoom(MatrixIdentifier, backend.Room):
-    """
-    A matrix room
+    """ Representation of a matrix room.
+
+    Provides a way to do room-related things. We need to be careful because this is one of the main places
+    that the async and sync code mixes. 
     """
 
     def __init__(self, mxid: str, client: nio.Client):
@@ -116,101 +118,273 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
             self._room = None
 
     def join(self, username: str = None, password: str = None) -> None:
-        if self._client:
-            result = self._client.join( self._id )
-            if isinstance(result, nio.responses.JoinError):
-                raise backend.RoomError(result)
+        """Join a Matrix Room.
+
+        username and password are defined in `Room` so we define them here as well, but they are ignored."""
+        if not self._client or not self._id:
+            raise backend.RoomError("No access to the client object, so can't join room!")
+
+        result = self._client.join( self._id )
+        if isinstance(result, nio.responses.JoinError):
+            raise backend.RoomError(result)
 
     def leave(self, reason: str = None) -> None:
-        if self._client:
-            result = self._client.room_leave(self.id)
-            if isinstance(result, nio.responses.RoomLeaveError):
-                raise backend.RoomError(result)
+        if not self._client or not self._id:
+            raise backend.RoomError("No access to the client object, so can't leave room!")
+
+        result = self._client.room_leave(self._id)
+        if isinstance( result, nio.responses.RoomLeaveError):
+            raise backend.RoomError( result )
 
     def create(self) -> None:
+        """Create a new room.
+
+        If the room is created via this method, it's assumed to be a group room (because that was was errbot
+        understood a room to be). Calling this on a room that has an ID will upset it."""
+        if not self._client or self._id:
+            raise Exception("no access to client, so cannot create room!")
+
         result = self._client.room_create()
         if isinstance(result, nio.responses.RoomCreateError):
             raise backend.RoomError(result)
 
     def destroy(self) -> None:
+        """Destory a Room.
+
+        In matrix, destroing a room isn't really a thing. We can forget a room, which is the same as parting.
+        but a room will always exist as long as it has people in it. Calling this on a room without an ID
+        will upset it."""
+        if not self._client or not self._id:
+            raise Exception("no access to client, so cannot forget room!")
+
         result = self._client.room_forget(self._id)
         if isinstance(result, nio.RoomForgetError):
             raise backend.RoomError(result)
 
     @property
     def is_private(self) -> bool:
-        native_room = self._client.rooms[ self._id ]
-        return native_room.is_group and native_room.member_count == 2
+        """Is this room private?
+
+        We consider a room to be private if it contains exactly two people, and it marked as a 'group' room
+        (as apposed to a public one)."""
+        if not self._id or self._client:
+            return False
+
+        return self._room.is_group and self._room.member_count == 2
 
     @property
     def exists(self) -> bool:
+        """Does this room exist?"""
+        if not self._id:
+            return False
+
         all_rooms = set( self._client.rooms.keys() )
         return self._id in all_rooms
 
     @property
     def joined(self) -> bool:
+        """Are we currently joined to this room?"""
         return self._room != None
 
     @property
     def topic(self) -> str:
+        """Get the current topic this room.
+
+        This will return an error if we're not in the room.
+        """
         if not self.joined:
             raise backend.RoomNotJoinedError()
         return self._room.topic
 
     @topic.setter
     def topic(self, topic: str) -> None:
-        pass
+        """Update the topic for a room.
+
+        We don't support this (yet)"""
+        raise NotImplementedError("not supported yet")
+
+    def get_occupant(self, mxid):
+        """Get a matrix room occupant from an mxid"""
+        if not self.joined:
+            raise backend.RoomNotJoinedError()
+        try:
+            native_user = self._room.users[mxid]
+            return MatrixRoomOccupant( native_user, self )
+        except KeyError:
+            return None
 
     @property
     def occupants(self) -> List[backend.RoomOccupant]:
+        """Get RoomOccupant proxies for all room members."""
         if not self.joined:
             raise backend.RoomNotJoinedError()
 
         people = list()
-        for user in self._room.users:
-            occupant = MatrixRoomOccupant( user.user_id, self._id )
-            people.append( occupant )
+        for (uid, user) in self._room.users.items():
+            people.append( MatrixRoomOccupant( user, self ) )
         return people
 
     def invite(self, *args: List[Any]) -> None:
-        for user_id in args:
-            pass
+        """Invite one or more users to a room.
+
+        I'm just not tackling this one right now. I need to look into how it's actually used in the bot.
+        """
+        raise NotImplementedError("not supported")
+
+    ##
+    # Matrix Spesfic stuff
+    ##
+
+    @property
+    def display_name(self):
+        """Show the user friendly version of a room name."""
+        if not self._room:
+            return self._id
+        return self._room.display_name
+
+    @property
+    def machine_name(self):
+        """The room's machine name.
+
+        This will either be the room id, or an alias."""
+        if not self._room:
+            return self._id
+        return self._room.machine_name
+
+    def powerlevel(self, user_id):
+        """Return a matrix power level for a given user id.
+
+        If we don't know, assume 0.
+        """
+        if not self._room:
+            return 0
+
+        if isinstance(user_id, MatrixPerson):
+            user_id = user_id._id
+
+        return self._room.powerlevels.users.get( user_id, 0 )
 
     def __str__(self):
-        return self._id
+        return "{} ({})".format( self.display_name, self.machine_name )
 
-class MatrixRoomOccupant(MatrixIdentifier, backend.RoomOccupant):
+class MatrixRoomOccupant(backend.Person, backend.RoomOccupant):
     """
     Representation of a particular user in particular room.
 
     From a matrix perspective this isn't really a thing, but it *is* a thing in XMPP, which is probably why
-    errbot makes the distinction. Still, fairly easy for us to deal with.
+    errbot makes the distinction. Just passing a Person object directly doesn't work because parts of the
+    bot make use of the `room` method. This doens't inherit directly from MatrixPerson because we are
+    checking on types in the backend to route messages in a way that errbot expects.
     """
 
-    def __init__(self, user: MatrixPerson, channel: MatrixRoom):
-        super().__init__(user._id)
-        self._user = user
+    def __init__(self, native_occupant, channel: MatrixRoom):
+        super().__init__()
+        self._id = native_occupant.user_id
+        self._native = native_occupant
         self._room = channel
 
-    def real_user(self) -> MatrixPerson:
-        """Return the current user.
+    @property
+    def person(self) -> str:
+        try:
+            return self._native.user_id
+        except Exception as e:
+            log.debug("what? %s", e)
 
-        This exists to ensure that a plugin writer has an 'escape hatch' to avoid dealing with the
-        occupant/user split. Calling this method on a `frm` will always get you the user object.
-        """
-        return self._user
+    @property
+    def client(self) -> str:
+        """Get the client string.
+
+        Matrix has device IDs, but i'm not sure they serve the same purpose as this (looks to be designed
+        for resource support)."""
+        return ""
+
+    @property
+    def nick(self) -> str:
+        """Nick (shortname) of a user in a room.
+
+        This delegates to the MatrixPerson object, which calculates the nick as @<nick>:example.com.
+
+        Note, matrix supports per-room names and avatars. For now, I'm using their global one but we should
+        probably support this on a per-room basis."""
+        return self._native.user_id.split(":")[0][1:]
+
+    @property
+    def aclattr(self) -> str:
+        """ACL name for RoomOccupant.
+
+        I'm delegating to the mxid of the user. This could be something we could adapt so the acls aren't
+        global (ie, @fred:example.com in #room:example.com != @fred:example.com in #room:example.net)."""
+        return self._native.user_id
+
+    @property
+    def fullname(self) -> str:
+        """Full name of a user in a room.
+
+        Note, matrix supports per-room names and avatars. For now, I'm using their global one but we should
+        probably support this on a per-room basis."""
+        return self._native.name
 
     def real_room(self) -> MatrixRoom:
+        """Return a reference to the Matrix Room Object.
+
+        This allows 'easy' access to anything matrix-spesific on the room objects."""
         return self._room
 
     @property
     def room(self) -> MatrixRoom:
-        return self._room
+        """Return a representation of the room.
+
+        There is some debate about what this actually *does*, the docs aren't overly clear. For now, return
+        the room ID"""
+        return self._room._id
+
+    @property
+    def disambiguated_name(self):
+        return self._native.disambiguated_name
+
+    @property
+    def powerlevel(self):
+        return self._native.power_level
+
+    @property
+    def presence(self):
+        return self._native.presence
+
+    @property
+    def currently_active(self):
+        return self._native.currently_active
+
+    @property
+    def status_message(self):
+        return self._native.status_msg
 
     def __str__(self):
-        return "{} in room {}".format( self._user, self._room )
+        return "{} in {}".format( self.disambiguated_name, self._room )
+
+MatrixMessageTypes = [
+    # basic message
+    "m.text",
+    "m.notice",
+
+    # rich messages
+    "m.image",
+    "m.audio",
+    "m.video",
+    "m.location",
+    "m.emote"
+
+    # room effects
+    "nic.custom.confetti",
+    "nic.custom.fireworks",
+    "io.element.effect.snowfall",
+    "io.element.effects.space_invaders"
+]
 
 class MatrixMessage(backend.Message):
+    """A representation of a chat message.
+
+    This is a matrix-spesific version of the generic message object. Mostly, it adds matrix-spesific concepts
+    and 'fixes' the defintion of a private/public room to match matrix's expectations."""
 
     def __init__(self,
             body = "",
@@ -222,9 +396,11 @@ class MatrixMessage(backend.Message):
             extras = None,
             flow = None):
         super().__init__(body, frm, to, parent, delayed, partial, extras, flow)
+        self._msgtype = "m.text"
+        self._content = dict()
 
     def clone(self):
-        return MatrixMessage(
+        msg = MatrixMessage(
             body=self._body,
             frm=self._from,
             to=self._to,
@@ -234,17 +410,74 @@ class MatrixMessage(backend.Message):
             extras=self._extras,
             flow=self._flow,
         )
+        msg._msgtype = self._msgtype
+        msg._content = self._content
+        return msg
+
+    @property
+    def event_id(self):
+        """Get the Matrix Event ID.
+
+        Only works for received events (as sent events won't have a messageID yet."""
+        return self._extras.get('event_id', None)
+
+    @property
+    def msgtype(self):
+        """Return the Matrix message type for this message"""
+        return self._msgtype
+
+    def get_custom(self, key):
+        """Get custom content.
+
+        Matrix messages could contain extra/useful fields in the body of the message. This exposes
+        them for you."""
+        return self._content.get(key, None)
+
+    def set_custom(self, key, value):
+        """Custom content keys.
+
+        These will be merged with the matrix message before sending.
+        Only use these if you know what you are doing!"""
+        if value == None:
+            del self._content[key]
+        self._content[key] = value
+
+    def set_msgtype(self, msg_type="m.text", idx=None):
+        """Sets the message type.
+
+        This will be used when sending the event to the matrix room.
+        """
+        # there is something strange with the special effect types...
+        if idx:
+            msg_type = MatrixMessageTypes[idx]
+
+        if msg_type not in MatrixMessageTypes:
+            log.warning("Unknown message type for matrix message: %s, known types are: %s", msg_type, MatrixMessageTypes)
+        self._msgtype = msg_type
 
     @property
     def is_direct(self):
-        return self.to.is_private
+        """Is this a direct (non-group chat) message?
+
+        In errbot, a direct message is from (frm) a Person, and to a Person. We represent this as from a
+        person, and to a Room which meets our 'private' critera.
+
+        In matrix, all chats are rooms and technically they can be made into group chats. There are room hints
+        which state that a room is intended to be a direct message (but they're hints, not rules). We
+        consider a direct message to be any message in a 'private' room (see MatrixRoom for what that means)"""
+        return isinstance(self.frm, MatrixPerson) and self.to.is_private
 
     @property
     def is_group(self):
-        return not self.is_direct
+        """Is this a group (non-private) message?
+
+        In errbot, a group message is between many partipants, and is from a RoomOccupant to a room object.
+        We represent this as a MatrixRoomOccupant to a MatrixRoom.
+        """
+        return isinstance(self.frm, MatrixRoomOccupant) and not self.to.is_private
 
     def __str__(self):
-        return "BLARG"
+        return "{}".format( self.body )
 
 class MatrixBackendAsync(object):
     """Async-native backend code"""
@@ -273,19 +506,23 @@ class MatrixBackendAsync(object):
         extras['decypted'] = event.decrypted
         extras['verified'] = event.verified
 
+        # message type data
+        if isinstance(event, nio.events.room_events.RoomMessage):
+            source = event.flattened()
+            log.debug("%s", source )
+
     async def on_message(self, room, event: nio.events.room_events.RoomMessageText):
         """Callback for handling matrix messages"""
 
         try:
             log.info("got a message")
             err_room = MatrixRoom( room.room_id, self._client )
-            err_person = await self.get_matrix_person( event.sender )
 
             # because (presumably XMPP) the core bot plugins make assumptions about occupants
             if not err_room.is_private:
-                err_sender = MatrixRoomOccupant( err_room, err_person )
+                err_sender = err_room.get_occupant( event.sender )
             else:
-                err_sender = err_person
+                err_sender = await self.get_matrix_person( event.sender )
 
             msg = MatrixMessage(
                 event.body,
@@ -354,6 +591,19 @@ class MatrixBackendAsync(object):
             log.warning("could not create management room: %s", new_room)
             raise Exception("couldn't create management room")
 
+    async def _get_room_id(self, msg):
+        target = msg.to
+        if isinstance( msg.to, str ):
+            target = self._bot.build_identifier( target )
+
+        if isinstance( target, MatrixPerson ):
+            # sending to a person? find/create a management channel
+            target = await self.get_private_channel( msg.to )
+        else:
+            # sending to a room? just do it directly
+            target = target._id
+            
+        return target
 
     async def send_message(self, msg: backend.Message) -> None:
         """Send a errbot-style message to matrix"""
@@ -362,26 +612,60 @@ class MatrixBackendAsync(object):
 
         try:
             # try to figure out where the message has to go...
-            target = msg.to
-            if isinstance( msg.to, str ):
-                target = self._bot.build_identifier( target )
+            target = await self._get_room_id( msg )
 
-            if isinstance( target, MatrixPerson ):
-                # sending to a person really means, "send to management channel"
-                room_target = await self.get_private_channel( msg.to )
-            else:
-                # we're sending to a room, we know how to do that...
-                room_target = target._id
+            body = self._format( { 'msgtype': msg.msgtype, 'body': msg.body } )
+            body.update( msg._content )
 
-            body = self._format( { 'msgtype': 'm.text', 'body': msg.body } )
             result = await self._client.room_send( 
-                    room_id=room_target,
+                    room_id = target,
                     message_type='m.room.message',
                     content = body
                 )
 
             if isinstance(result, nio.responses.RoomSendError):
                 log.warning("message didn't send properly")
+        except Exception as e:
+            import traceback
+            track = traceback.format_exc()
+            print(track)
+            log.debug("error: %s", e)
+
+    async def send_reaction(self, msg, reaction) -> None:
+        """Try to send an MSC2677 reaction to a message.
+
+        This isn't technically part of the spec, but it is in element, so should be displayed."""
+        if not msg.event_id:
+            raise Exception("cannot react to a message that wasn't sent from matrix!")
+
+        try:
+            target = await self._get_room_id( msg )
+            return await self.annotate_event( target, msg.event_id, reaction )
+        except Exception as e:
+            import traceback
+            track = traceback.format_exc()
+            print(track)
+            log.debug("error: %s", e)
+
+    async def annotate_event(self, room_id, event_id, reaction) -> None:
+        """Try to send an MSC2677 annotation to an event.
+
+        This is a bit more risky that passing a message, because you can react to things that are not
+        messages. I've created this because the event could be saved/supplied somehow and still be reactable.
+        """
+        try:
+            body = { 'm.relates_to': {
+                'rel_type': 'm.annotation',
+                'event_id': event_id,
+                'key': reaction
+            }}
+            result = await self._client.room_send(
+                    room_id = room_id,
+                    message_type = 'm.reaction',
+                    content = body
+                )
+            if isinstance(result, nio.responses.RoomSendError):
+                log.warning("reaction didn't send properly: %s", result)
         except Exception as e:
             import traceback
             track = traceback.format_exc()
@@ -461,7 +745,7 @@ class MatrixBackend(ErrBot):
         elif txt[0] == '#':
             for room in self._client.rooms.values():
                 if room.canonical_alias == txt:
-                    return MatrixRoom( txt, room )
+                    return MatrixRoom( room.room_id, self._client )
         return None
 
     def build_message(self, txt):
@@ -486,6 +770,13 @@ class MatrixBackend(ErrBot):
         future = asyncio.run_coroutine_threadsafe( self._async.send_message(msg), loop=self.loop )
         log.info("message submitted, result: %s", future.done)
 #        return future.result()
+
+    def react(self, msg: backend.Message, reaction):
+        """React to an existing message.
+
+        msg is the message your reacting to, not your response!"""
+        log.info("sending reaction...")
+        asyncio.run_coroutine_threadsafe( self._async.send_reaction(msg, reaction), loop=self.loop )
 
     @property
     def mode(self):
