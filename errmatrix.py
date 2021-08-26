@@ -10,6 +10,7 @@ import sys
 import logging
 import asyncio
 
+from dataclasses import dataclass
 from typing import Any, Optional, List, Dict
 
 import errbot.backends.base as backend
@@ -28,6 +29,18 @@ except ImportError:
     )
     sys.exit(1)
 
+@dataclass
+class MatrixProfile:
+    full_name: str
+    avatar_url: str
+    extras: dict
+
+    def emails(self) -> List[str]:
+        if 'address' not in self.extras:
+            return []
+        else:
+            return self.extras['address']
+
 class MatrixIdentifier(backend.Identifier):
 
     def __init__(self, mxid: str):
@@ -44,9 +57,21 @@ class MatrixPerson(MatrixIdentifier):
     A matrix user
     """
 
-    def __init__(self, mxid: str, profile: Any):
+    def __init__(self, mxid: str, profile: MatrixProfile = None, client = None):
         super().__init__( mxid )
-        self._profile = profile
+        self._client = client
+        if profile:
+            self._profile = profile
+        else:
+            self._profile = {}
+
+    def real_user(self):
+        """Return the current user.
+
+        This exists to ensure that a plugin writer has an 'escape hatch' to avoid dealing with the
+        occupant/user split. Calling this method on a `frm` will always get you the user object.
+        """
+        return self
 
     @property
     def person(self) -> str:
@@ -66,11 +91,15 @@ class MatrixPerson(MatrixIdentifier):
 
     @property
     def fullname(self) -> str:
-        return self._profile.get("displayname", None)
+        return self._profile.full_name
 
     @property
     def email(self) -> str:
-        pass
+        emails = self._profile.emails()
+        if not emails:
+            return ""
+        else:
+            return emails[0]
 
 class MatrixRoom(MatrixIdentifier, backend.Room):
     """
@@ -139,7 +168,7 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
 
         people = list()
         for user in self._room.users:
-            occupant = MatrixRoomOccupant( user.user_id, self._id, self._id )
+            occupant = MatrixRoomOccupant( user.user_id, self._id )
             people.append( occupant )
         return people
 
@@ -147,17 +176,39 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
         for user_id in args:
             pass
 
-class MatrixRoomOccupant(MatrixPerson, backend.RoomOccupant):
+    def __str__(self):
+        return self._id
+
+class MatrixRoomOccupant(MatrixIdentifier, backend.RoomOccupant):
     """
+    Representation of a particular user in particular room.
+
+    From a matrix perspective this isn't really a thing, but it *is* a thing in XMPP, which is probably why
+    errbot makes the distinction. Still, fairly easy for us to deal with.
     """
 
-    def __init__(self, userid:str, profile: Any, channelid):
-        super().__init__(userid, profile)
-        self._room = channelid
+    def __init__(self, user: MatrixPerson, channel: MatrixRoom):
+        super().__init__(user._id)
+        self._user = user
+        self._room = channel
+
+    def real_user(self) -> MatrixPerson:
+        """Return the current user.
+
+        This exists to ensure that a plugin writer has an 'escape hatch' to avoid dealing with the
+        occupant/user split. Calling this method on a `frm` will always get you the user object.
+        """
+        return self._user
+
+    def real_room(self) -> MatrixRoom:
+        return self._room
 
     @property
-    def room(self) -> Any:
+    def room(self) -> MatrixRoom:
         return self._room
+
+    def __str__(self):
+        return "{} in room {}".format( self._user, self._room )
 
 class MatrixMessage(backend.Message):
 
@@ -228,9 +279,17 @@ class MatrixBackendAsync(object):
         try:
             log.info("got a message")
             err_room = MatrixRoom( room.room_id, self._client )
+            err_person = await self.get_matrix_person( event.sender )
+
+            # because (presumably XMPP) the core bot plugins make assumptions about occupants
+            if not err_room.is_private:
+                err_sender = MatrixRoomOccupant( err_room, err_person )
+            else:
+                err_sender = err_person
+
             msg = MatrixMessage(
                 event.body,
-                MatrixRoomOccupant( event.sender, self, room.room_id ),
+                err_sender,
                 err_room
             )
             self._annotate_event( event, msg.extras )
@@ -245,17 +304,14 @@ class MatrixBackendAsync(object):
         """Callback for handling room invites"""
         await self._client.join( room.room_id )
 
-    async def get_profile(self, user) -> dict:
+    async def get_profile(self, user: str) -> dict:
         response = await self._client.get_profile( user )
-        if isinstance(response, nio.responses.ProfileGetResponse):
-            profile = {
-                'name': response.displayname,
-                'avatar': response.avatar_url,
-                'extras': response.other_info
-            }
-            return profile
+        if isinstance(response, nio.responses.ProfileGetError):
+            log.warning("error getting profile data for user: %s", response)
+            return MatrixProfile()
         else:
-            return {}
+            log.debug( "extra info %s is %s", user, response.other_info )
+            return MatrixProfile( response.displayname, response.avatar_url, response.other_info )
 
     async def get_matrix_person(self, mxid: str) -> MatrixPerson:
         profile = await self.get_profile( mxid )
@@ -302,15 +358,19 @@ class MatrixBackendAsync(object):
     async def send_message(self, msg: backend.Message) -> None:
         """Send a errbot-style message to matrix"""
 
-        log.info( "sending message to: %s", msg.to )
+        log.debug( "sending message %s to: %s", msg, msg.to )
+
         try:
+            # try to figure out where the message has to go...
             target = msg.to
-            if isinstance( target, str ):
+            if isinstance( msg.to, str ):
                 target = self._bot.build_identifier( target )
 
             if isinstance( target, MatrixPerson ):
+                # sending to a person really means, "send to management channel"
                 room_target = await self.get_private_channel( msg.to )
             else:
+                # we're sending to a room, we know how to do that...
                 room_target = target._id
 
             body = self._format( { 'msgtype': 'm.text', 'body': msg.body } )
@@ -322,7 +382,6 @@ class MatrixBackendAsync(object):
 
             if isinstance(result, nio.responses.RoomSendError):
                 log.warning("message didn't send properly")
-            log.debug(result)
         except Exception as e:
             import traceback
             track = traceback.format_exc()
@@ -393,7 +452,9 @@ class MatrixBackend(ErrBot):
     def build_identifier(self, txt: str):
         log.debug("getting identifier for: %s", txt) 
         if txt[0] == '@':
-            return MatrixPerson( txt, {} )
+            person = MatrixPerson( txt, {} )
+            person.stub = True
+            return person
         elif txt[0] == '!':
             if txt in self._client.rooms:
                 return MatrixRoom( txt, self._client )
@@ -404,7 +465,7 @@ class MatrixBackend(ErrBot):
         return None
 
     def build_message(self, txt):
-        return MatrixMessage(body=text)
+        return MatrixMessage(body=txt)
 
     def build_reply(self,
             msg: backend.Message,
@@ -412,7 +473,7 @@ class MatrixBackend(ErrBot):
         log.info(f"Tried to build reply: {msg} - {text} - {private} - {threaded}")
         response = self.build_message(text)
         response.frm = self.bot_identifier
-        response.to = msg.frm._room
+        response.to = msg.to
         return response
 
     def change_presence(self, status: str = '', message: str = ''):
