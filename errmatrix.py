@@ -6,9 +6,15 @@
 # This is based on the other backends that are out there for errbot.
 ##
 
+import os
 import sys
 import logging
 import asyncio
+
+# image management
+import mimetypes
+from PIL import Image
+import aiofiles.os
 
 from dataclasses import dataclass
 from typing import Any, Optional, List, Dict
@@ -220,7 +226,7 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
             raise backend.RoomNotJoinedError()
 
         people = list()
-        for (uid, user) in self._room.users.items():
+        for user in self._room.users.values():
             people.append( MatrixRoomOccupant( user, self ) )
         return people
 
@@ -490,6 +496,7 @@ class MatrixBackendAsync(object):
 
     def attach_callbacks(self):
         self._client.add_event_callback( self.on_message, nio.events.room_events.RoomMessageText )
+        self._client.add_event_callback( self.on_unknown, nio.events.room_events.UnknownEvent )
         self._client.add_event_callback( self.on_invite, nio.events.invite_events.InviteEvent )
 
     def _format(self, msg):
@@ -536,6 +543,55 @@ class MatrixBackendAsync(object):
             import traceback
             track = traceback.format_exc()
             print(track)
+
+    async def on_unknown(self, room, event: nio.events.room_events.UnknownEvent):
+        """Callback for unknown events"""
+
+        if event.type == "m.reaction":
+            return await self.on_reaction(room, event)
+        else:
+            log.debug( "unknown event: %s", event )
+
+    async def on_reaction(self, room, event):
+        """Handler for matrix reactions.
+
+        This isn't offical yet, so rather than a 'real' callback I'm simulating it."""
+        try:
+            fields = event.source
+            err_room = MatrixRoom( room.room_id, self._client )
+
+            reactor = await self.get_matrix_person( fields['sender'] )
+            if reactor == self._bot.bot_identifier:
+                return
+
+            action = backend.REACTION_ADDED
+            timestamp = event.server_timestamp
+            reaction_name = fields['content']['m.relates_to']['key']
+
+            # find the original
+            event2 = await self._client.room_get_event( room.room_id, fields['content']['m.relates_to']['event_id'] )
+            if not isinstance(event2, nio.responses.RoomGetEventResponse):
+                log.warning("got %s rather than RoomGetEventResponse", event2 )
+                return
+
+            reacted_to = { 'source': event2.event.source, 'room': err_room }
+            reacted_to_owner = await self.get_matrix_person( event2.event.sender )
+
+            reaction = backend.Reaction(
+                    reactor,
+                    reacted_to_owner,
+                    action,
+                    timestamp,
+                    reaction_name,
+                    reacted_to
+            )
+            await self._bot.loop.run_in_executor(None, self._bot.callback_reaction, reaction)
+        except Exception as e:
+            log.warning("something went wrong processing a reaction... %s", e)
+            import traceback
+            track = traceback.format_exc()
+            print(track)
+
 
     async def on_invite(self, room, event: nio.events.invite_events.InviteEvent) -> None:
         """Callback for handling room invites"""
@@ -630,6 +686,48 @@ class MatrixBackendAsync(object):
             track = traceback.format_exc()
             print(track)
             log.debug("error: %s", e)
+
+    async def send_image(self, room, image):
+        try:
+            mime_type = mimetypes.guess_type( image )[0]
+            if not mime_type.startswith("image/"):
+                raise Exception("that was not an image!")
+
+            im = Image.open(image)
+            (width, height) = im.size
+
+            # we need an mxc for the next step
+            file_stat = await aiofiles.os.stat( image )
+            async with aiofiles.open( image, "r+b") as f:
+                resp, maybe_keys = await self._client.upload( f,
+                        content_type=mime_type,
+                        filename=os.path.basename( image ),
+                        filesize = file_stat.st_size )
+                if not isinstance(resp, nio.responses.UploadResponse):
+                    log.debug("Error uploading image: %s", resp)
+                    raise Exception("image didn't upload :(")
+
+                content = {
+                    "body": os.path.basename( image ),
+                    "info": {
+                        "size": file_stat.st_size,
+                        "mimetype": mime_type,
+                        "thumbnail_info": None,
+                        "w": width,
+                        "h": height,
+                        "thumbnail_url": None
+                    },
+                    "msgtype": "m.image",
+                    "url": resp.content_uri
+                }
+
+                try:
+                    await self._client.room_send( room._id, message_type="m.room.message", content=content )
+                except Exception as e:
+                    log.debug("Error sending image, %s", e)
+        except Exception as e:
+            log.debug("Error sending image, %s", e)
+
 
     async def send_reaction(self, msg, reaction) -> None:
         """Try to send an MSC2677 reaction to a message.
@@ -770,6 +868,10 @@ class MatrixBackend(ErrBot):
         future = asyncio.run_coroutine_threadsafe( self._async.send_message(msg), loop=self.loop )
         log.info("message submitted, result: %s", future.done)
 #        return future.result()
+
+    def send_image(self, room, image_path):
+        future = asyncio.run_coroutine_threadsafe( self._async.send_image(room, image_path), loop=self.loop )
+
 
     def react(self, msg: backend.Message, reaction):
         """React to an existing message.
