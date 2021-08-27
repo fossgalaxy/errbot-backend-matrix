@@ -342,9 +342,9 @@ class MatrixRoomOccupant(backend.Person, backend.RoomOccupant):
     def room(self) -> MatrixRoom:
         """Return a representation of the room.
 
-        There is some debate about what this actually *does*, the docs aren't overly clear. For now, return
-        the room ID"""
-        return self._room._id
+        Grepping the core, in most cases core simply call str(room) on this,
+        but Flows *does* assume its a valid Identifer subclass"""
+        return self._room
 
     @property
     def disambiguated_name(self):
