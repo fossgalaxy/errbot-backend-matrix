@@ -26,5 +26,6 @@ lint-test-job:
   image: python:3
   stage: test
   script:
+    - pip install black
     - black --check errmatrix.py
 
