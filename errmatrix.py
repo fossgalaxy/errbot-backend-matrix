@@ -30,10 +30,11 @@ try:
 except ImportError:
     log.exception("Could not import matrix backend")
     log.fatal(
-            "You need to install the Matrix API in order to use the matrix backend"
-            "You can do `pip install -r requirements.txt` to install it"
+        "You need to install the Matrix API in order to use the matrix backend"
+        "You can do `pip install -r requirements.txt` to install it"
     )
     sys.exit(1)
+
 
 @dataclass
 class MatrixProfile:
@@ -42,13 +43,13 @@ class MatrixProfile:
     extras: dict
 
     def emails(self) -> List[str]:
-        if 'address' not in self.extras:
+        if "address" not in self.extras:
             return []
         else:
-            return self.extras['address']
+            return self.extras["address"]
+
 
 class MatrixIdentifier(backend.Identifier):
-
     def __init__(self, mxid: str):
         self._id = mxid
 
@@ -58,13 +59,14 @@ class MatrixIdentifier(backend.Identifier):
     def __str__(self):
         return str(self._id)
 
+
 class MatrixPerson(MatrixIdentifier):
     """
     A matrix user
     """
 
-    def __init__(self, mxid: str, profile: MatrixProfile = None, client = None):
-        super().__init__( mxid )
+    def __init__(self, mxid: str, profile: MatrixProfile = None, client=None):
+        super().__init__(mxid)
         self._client = client
         if profile:
             self._profile = profile
@@ -107,11 +109,12 @@ class MatrixPerson(MatrixIdentifier):
         else:
             return emails[0]
 
+
 class MatrixRoom(MatrixIdentifier, backend.Room):
-    """ Representation of a matrix room.
+    """Representation of a matrix room.
 
     Provides a way to do room-related things. We need to be careful because this is one of the main places
-    that the async and sync code mixes. 
+    that the async and sync code mixes.
     """
 
     def __init__(self, mxid: str, client: nio.Client):
@@ -119,7 +122,7 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
         self._client = client
 
         if mxid in self._client.rooms:
-            self._room = self._client.rooms[ mxid ]
+            self._room = self._client.rooms[mxid]
         else:
             self._room = None
 
@@ -128,19 +131,23 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
 
         username and password are defined in `Room` so we define them here as well, but they are ignored."""
         if not self._client or not self._id:
-            raise backend.RoomError("No access to the client object, so can't join room!")
+            raise backend.RoomError(
+                "No access to the client object, so can't join room!"
+            )
 
-        result = self._client.join( self._id )
+        result = self._client.join(self._id)
         if isinstance(result, nio.responses.JoinError):
             raise backend.RoomError(result)
 
     def leave(self, reason: str = None) -> None:
         if not self._client or not self._id:
-            raise backend.RoomError("No access to the client object, so can't leave room!")
+            raise backend.RoomError(
+                "No access to the client object, so can't leave room!"
+            )
 
         result = self._client.room_leave(self._id)
-        if isinstance( result, nio.responses.RoomLeaveError):
-            raise backend.RoomError( result )
+        if isinstance(result, nio.responses.RoomLeaveError):
+            raise backend.RoomError(result)
 
     def create(self) -> None:
         """Create a new room.
@@ -186,7 +193,7 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
         if not self._id:
             return False
 
-        all_rooms = set( self._client.rooms.keys() )
+        all_rooms = set(self._client.rooms.keys())
         return self._id in all_rooms
 
     @property
@@ -217,7 +224,7 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
             raise backend.RoomNotJoinedError()
         try:
             native_user = self._room.users[mxid]
-            return MatrixRoomOccupant( native_user, self )
+            return MatrixRoomOccupant(native_user, self)
         except KeyError:
             return None
 
@@ -229,7 +236,7 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
 
         people = list()
         for user in self._room.users.values():
-            people.append( MatrixRoomOccupant( user, self ) )
+            people.append(MatrixRoomOccupant(user, self))
         return people
 
     def invite(self, *args: List[Any]) -> None:
@@ -270,10 +277,11 @@ class MatrixRoom(MatrixIdentifier, backend.Room):
         if isinstance(user_id, MatrixPerson):
             user_id = user_id._id
 
-        return self._room.powerlevels.users.get( user_id, 0 )
+        return self._room.powerlevels.users.get(user_id, 0)
 
     def __str__(self):
-        return "{} ({})".format( self.display_name, self.machine_name )
+        return "{} ({})".format(self.display_name, self.machine_name)
+
 
 class MatrixRoomOccupant(backend.Person, backend.RoomOccupant):
     """
@@ -367,26 +375,26 @@ class MatrixRoomOccupant(backend.Person, backend.RoomOccupant):
         return self._native.status_msg
 
     def __str__(self):
-        return "{} in {}".format( self.disambiguated_name, self._room )
+        return "{} in {}".format(self.disambiguated_name, self._room)
+
 
 MatrixMessageTypes = [
     # basic message
     "m.text",
     "m.notice",
-
     # rich messages
     "m.image",
     "m.audio",
     "m.video",
     "m.location",
     "m.emote"
-
     # room effects
     "nic.custom.confetti",
     "nic.custom.fireworks",
     "io.element.effect.snowfall",
-    "io.element.effects.space_invaders"
+    "io.element.effects.space_invaders",
 ]
+
 
 class MatrixMessage(backend.Message):
     """A representation of a chat message.
@@ -394,15 +402,17 @@ class MatrixMessage(backend.Message):
     This is a matrix-spesific version of the generic message object. Mostly, it adds matrix-spesific concepts
     and 'fixes' the defintion of a private/public room to match matrix's expectations."""
 
-    def __init__(self,
-            body = "",
-            frm = None,
-            to = None,
-            parent = None,
-            delayed = False,
-            partial = False,
-            extras = None,
-            flow = None):
+    def __init__(
+        self,
+        body="",
+        frm=None,
+        to=None,
+        parent=None,
+        delayed=False,
+        partial=False,
+        extras=None,
+        flow=None,
+    ):
         super().__init__(body, frm, to, parent, delayed, partial, extras, flow)
         self._msgtype = "m.text"
         self._content = dict()
@@ -427,7 +437,7 @@ class MatrixMessage(backend.Message):
         """Get the Matrix Event ID.
 
         Only works for received events (as sent events won't have a messageID yet."""
-        return self._extras.get('event_id', None)
+        return self._extras.get("event_id", None)
 
     @property
     def msgtype(self):
@@ -460,7 +470,11 @@ class MatrixMessage(backend.Message):
             msg_type = MatrixMessageTypes[idx]
 
         if msg_type not in MatrixMessageTypes:
-            log.warning("Unknown message type for matrix message: %s, known types are: %s", msg_type, MatrixMessageTypes)
+            log.warning(
+                "Unknown message type for matrix message: %s, known types are: %s",
+                msg_type,
+                MatrixMessageTypes,
+            )
         self._msgtype = msg_type
 
     @property
@@ -485,7 +499,8 @@ class MatrixMessage(backend.Message):
         return isinstance(self.frm, MatrixRoomOccupant) and not self.to.is_private
 
     def __str__(self):
-        return "{}".format( self.body )
+        return "{}".format(self.body)
+
 
 class MatrixBackendAsync(object):
     """Async-native backend code"""
@@ -497,52 +512,55 @@ class MatrixBackendAsync(object):
         self._management = dict()
 
     def attach_callbacks(self):
-        self._client.add_event_callback( self.on_message, nio.events.room_events.RoomMessageText )
-        self._client.add_event_callback( self.on_unknown, nio.events.room_events.UnknownEvent )
-        self._client.add_event_callback( self.on_invite, nio.events.invite_events.InviteEvent )
+        self._client.add_event_callback(
+            self.on_message, nio.events.room_events.RoomMessageText
+        )
+        self._client.add_event_callback(
+            self.on_unknown, nio.events.room_events.UnknownEvent
+        )
+        self._client.add_event_callback(
+            self.on_invite, nio.events.invite_events.InviteEvent
+        )
 
     def _format(self, msg):
         """Inject the HMTL version of a plain message"""
-        if msg['msgtype'] == 'm.text' and 'format' not in msg:
-            msg['format'] ='org.matrix.custom.html'
-            msg['formatted_body'] = self._md.convert( msg['body'] )
+        if msg["msgtype"] == "m.text" and "format" not in msg:
+            msg["format"] = "org.matrix.custom.html"
+            msg["formatted_body"] = self._md.convert(msg["body"])
         return msg
 
     def _annotate_event(self, event: nio.events.room_events.Event, extras: dict):
-        extras['event_id'] = event.event_id
-        extras['sender'] = event.sender
-        extras['timestamp'] = event.server_timestamp
-        extras['decypted'] = event.decrypted
-        extras['verified'] = event.verified
+        extras["event_id"] = event.event_id
+        extras["sender"] = event.sender
+        extras["timestamp"] = event.server_timestamp
+        extras["decypted"] = event.decrypted
+        extras["verified"] = event.verified
 
         # message type data
         if isinstance(event, nio.events.room_events.RoomMessage):
             source = event.flattened()
-            log.debug("%s", source )
+            log.debug("%s", source)
 
     async def on_message(self, room, event: nio.events.room_events.RoomMessageText):
         """Callback for handling matrix messages"""
 
         try:
             log.info("got a message")
-            err_room = MatrixRoom( room.room_id, self._client )
+            err_room = MatrixRoom(room.room_id, self._client)
 
             # because (presumably XMPP) the core bot plugins make assumptions about occupants
             if not err_room.is_private:
-                err_sender = err_room.get_occupant( event.sender )
+                err_sender = err_room.get_occupant(event.sender)
             else:
-                err_sender = await self.get_matrix_person( event.sender )
+                err_sender = await self.get_matrix_person(event.sender)
 
-            msg = MatrixMessage(
-                event.body,
-                err_sender,
-                err_room
-            )
-            self._annotate_event( event, msg.extras )
+            msg = MatrixMessage(event.body, err_sender, err_room)
+            self._annotate_event(event, msg.extras)
             await self._bot.loop.run_in_executor(None, self._bot.callback_message, msg)
         except Exception as e:
             log.warning("something went wrong processing a message... %s", e)
             import traceback
+
             track = traceback.format_exc()
             print(track)
 
@@ -552,7 +570,7 @@ class MatrixBackendAsync(object):
         if event.type == "m.reaction":
             return await self.on_reaction(room, event)
         else:
-            log.debug( "unknown event: %s", event )
+            log.debug("unknown event: %s", event)
 
     async def on_reaction(self, room, event):
         """Handler for matrix reactions.
@@ -560,57 +578,60 @@ class MatrixBackendAsync(object):
         This isn't offical yet, so rather than a 'real' callback I'm simulating it."""
         try:
             fields = event.source
-            err_room = MatrixRoom( room.room_id, self._client )
+            err_room = MatrixRoom(room.room_id, self._client)
 
-            reactor = await self.get_matrix_person( fields['sender'] )
+            reactor = await self.get_matrix_person(fields["sender"])
             if reactor == self._bot.bot_identifier:
                 return
 
             action = backend.REACTION_ADDED
             timestamp = event.server_timestamp
-            reaction_name = fields['content']['m.relates_to']['key']
+            reaction_name = fields["content"]["m.relates_to"]["key"]
 
             # find the original
-            event2 = await self._client.room_get_event( room.room_id, fields['content']['m.relates_to']['event_id'] )
+            event2 = await self._client.room_get_event(
+                room.room_id, fields["content"]["m.relates_to"]["event_id"]
+            )
             if not isinstance(event2, nio.responses.RoomGetEventResponse):
-                log.warning("got %s rather than RoomGetEventResponse", event2 )
+                log.warning("got %s rather than RoomGetEventResponse", event2)
                 return
 
-            reacted_to = { 'source': event2.event.source, 'room': err_room }
-            reacted_to_owner = await self.get_matrix_person( event2.event.sender )
+            reacted_to = {"source": event2.event.source, "room": err_room}
+            reacted_to_owner = await self.get_matrix_person(event2.event.sender)
 
             reaction = backend.Reaction(
-                    reactor,
-                    reacted_to_owner,
-                    action,
-                    timestamp,
-                    reaction_name,
-                    reacted_to
+                reactor, reacted_to_owner, action, timestamp, reaction_name, reacted_to
             )
-            await self._bot.loop.run_in_executor(None, self._bot.callback_reaction, reaction)
+            await self._bot.loop.run_in_executor(
+                None, self._bot.callback_reaction, reaction
+            )
         except Exception as e:
             log.warning("something went wrong processing a reaction... %s", e)
             import traceback
+
             track = traceback.format_exc()
             print(track)
 
-
-    async def on_invite(self, room, event: nio.events.invite_events.InviteEvent) -> None:
+    async def on_invite(
+        self, room, event: nio.events.invite_events.InviteEvent
+    ) -> None:
         """Callback for handling room invites"""
-        await self._client.join( room.room_id )
+        await self._client.join(room.room_id)
 
     async def get_profile(self, user: str) -> dict:
-        response = await self._client.get_profile( user )
+        response = await self._client.get_profile(user)
         if isinstance(response, nio.responses.ProfileGetError):
             log.warning("error getting profile data for user: %s", response)
             return MatrixProfile()
         else:
-            log.debug( "extra info %s is %s", user, response.other_info )
-            return MatrixProfile( response.displayname, response.avatar_url, response.other_info )
+            log.debug("extra info %s is %s", user, response.other_info)
+            return MatrixProfile(
+                response.displayname, response.avatar_url, response.other_info
+            )
 
     async def get_matrix_person(self, mxid: str) -> MatrixPerson:
-        profile = await self.get_profile( mxid )
-        return MatrixPerson( mxid, profile )
+        profile = await self.get_profile(mxid)
+        return MatrixPerson(mxid, profile)
 
     async def get_private_channel(self, user):
         # FIXME this feels super hacky >.<
@@ -637,13 +658,10 @@ class MatrixBackendAsync(object):
 
         # no suitable room? make one!
         log.debug("no suitable room, making new one!")
-        new_room = await self._client.room_create(
-                is_direct = True,
-                invite = [ user._id ]
-        )
+        new_room = await self._client.room_create(is_direct=True, invite=[user._id])
 
         if isinstance(new_room, nio.responses.RoomCreateResponse):
-            self._management[ user._id ] = new_room.room_id
+            self._management[user._id] = new_room.room_id
             return new_room.room_id
         else:
             log.warning("could not create management room: %s", new_room)
@@ -651,47 +669,46 @@ class MatrixBackendAsync(object):
 
     async def _get_room_id(self, msg):
         target = msg.to
-        if isinstance( msg.to, str ):
-            target = self._bot.build_identifier( target )
+        if isinstance(msg.to, str):
+            target = self._bot.build_identifier(target)
 
-        if isinstance( target, MatrixPerson ):
+        if isinstance(target, MatrixPerson):
             # sending to a person? find/create a management channel
-            target = await self.get_private_channel( msg.to )
+            target = await self.get_private_channel(msg.to)
         else:
             # sending to a room? just do it directly
             target = target._id
-            
+
         return target
 
     async def send_message(self, msg: backend.Message) -> None:
         """Send a errbot-style message to matrix"""
 
-        log.debug( "sending message %s to: %s", msg, msg.to )
+        log.debug("sending message %s to: %s", msg, msg.to)
 
         try:
             # try to figure out where the message has to go...
-            target = await self._get_room_id( msg )
+            target = await self._get_room_id(msg)
 
-            body = self._format( { 'msgtype': msg.msgtype, 'body': msg.body } )
-            body.update( msg._content )
+            body = self._format({"msgtype": msg.msgtype, "body": msg.body})
+            body.update(msg._content)
 
-            result = await self._client.room_send( 
-                    room_id = target,
-                    message_type='m.room.message',
-                    content = body
-                )
+            result = await self._client.room_send(
+                room_id=target, message_type="m.room.message", content=body
+            )
 
             if isinstance(result, nio.responses.RoomSendError):
                 log.warning("message didn't send properly")
         except Exception as e:
             import traceback
+
             track = traceback.format_exc()
             print(track)
             log.debug("error: %s", e)
 
     async def send_image(self, room, image):
         try:
-            mime_type = mimetypes.guess_type( image )[0]
+            mime_type = mimetypes.guess_type(image)[0]
             if not mime_type.startswith("image/"):
                 raise Exception("that was not an image!")
 
@@ -699,37 +716,40 @@ class MatrixBackendAsync(object):
             (width, height) = im.size
 
             # we need an mxc for the next step
-            file_stat = await aiofiles.os.stat( image )
-            async with aiofiles.open( image, "r+b") as f:
-                resp, maybe_keys = await self._client.upload( f,
-                        content_type=mime_type,
-                        filename=os.path.basename( image ),
-                        filesize = file_stat.st_size )
+            file_stat = await aiofiles.os.stat(image)
+            async with aiofiles.open(image, "r+b") as f:
+                resp, maybe_keys = await self._client.upload(
+                    f,
+                    content_type=mime_type,
+                    filename=os.path.basename(image),
+                    filesize=file_stat.st_size,
+                )
                 if not isinstance(resp, nio.responses.UploadResponse):
                     log.debug("Error uploading image: %s", resp)
                     raise Exception("image didn't upload :(")
 
                 content = {
-                    "body": os.path.basename( image ),
+                    "body": os.path.basename(image),
                     "info": {
                         "size": file_stat.st_size,
                         "mimetype": mime_type,
                         "thumbnail_info": None,
                         "w": width,
                         "h": height,
-                        "thumbnail_url": None
+                        "thumbnail_url": None,
                     },
                     "msgtype": "m.image",
-                    "url": resp.content_uri
+                    "url": resp.content_uri,
                 }
 
                 try:
-                    await self._client.room_send( room._id, message_type="m.room.message", content=content )
+                    await self._client.room_send(
+                        room._id, message_type="m.room.message", content=content
+                    )
                 except Exception as e:
                     log.debug("Error sending image, %s", e)
         except Exception as e:
             log.debug("Error sending image, %s", e)
-
 
     async def send_reaction(self, msg, reaction) -> None:
         """Try to send an MSC2677 reaction to a message.
@@ -739,10 +759,11 @@ class MatrixBackendAsync(object):
             raise Exception("cannot react to a message that wasn't sent from matrix!")
 
         try:
-            target = await self._get_room_id( msg )
-            return await self.annotate_event( target, msg.event_id, reaction )
+            target = await self._get_room_id(msg)
+            return await self.annotate_event(target, msg.event_id, reaction)
         except Exception as e:
             import traceback
+
             track = traceback.format_exc()
             print(track)
             log.debug("error: %s", e)
@@ -754,20 +775,21 @@ class MatrixBackendAsync(object):
         messages. I've created this because the event could be saved/supplied somehow and still be reactable.
         """
         try:
-            body = { 'm.relates_to': {
-                'rel_type': 'm.annotation',
-                'event_id': event_id,
-                'key': reaction
-            }}
+            body = {
+                "m.relates_to": {
+                    "rel_type": "m.annotation",
+                    "event_id": event_id,
+                    "key": reaction,
+                }
+            }
             result = await self._client.room_send(
-                    room_id = room_id,
-                    message_type = 'm.reaction',
-                    content = body
-                )
+                room_id=room_id, message_type="m.reaction", content=body
+            )
             if isinstance(result, nio.responses.RoomSendError):
                 log.warning("reaction didn't send properly: %s", result)
         except Exception as e:
             import traceback
+
             track = traceback.format_exc()
             print(track)
             log.debug("error: %s", e)
@@ -778,22 +800,26 @@ class MatrixBackendAsync(object):
             raise Exception("error calling whoami")
 
         self.user_id = response.user_id
-        return await self.get_matrix_person( self.user_id )
+        return await self.get_matrix_person(self.user_id)
+
 
 class MatrixBackend(ErrBot):
-
     def __init__(self, config):
         super().__init__(config)
 
-        self.homeserver = config.BOT_IDENTITY['homeserver']
-        if not self.homeserver.startswith("http://") and not self.homeserver.startswith("https://"):
+        self.homeserver = config.BOT_IDENTITY["homeserver"]
+        if not self.homeserver.startswith("http://") and not self.homeserver.startswith(
+            "https://"
+        ):
             self.homeserver = "https://" + self.homeserver
 
-        self.token = config.BOT_IDENTITY['token']
+        self.token = config.BOT_IDENTITY["token"]
 
         # for token-based login
         if not self.token:
-            log.fatal("Bot didn't have a login token! - you need to give it one or it can't login!")
+            log.fatal(
+                "Bot didn't have a login token! - you need to give it one or it can't login!"
+            )
             sys.exit(1)
 
         # variables for matrix library
@@ -802,13 +828,13 @@ class MatrixBackend(ErrBot):
 
     def serve_once(self):
         self.loop = asyncio.get_event_loop()
-        return self.loop.run_until_complete( self._matrix_loop() )
+        return self.loop.run_until_complete(self._matrix_loop())
 
     async def _matrix_loop(self) -> bool:
         try:
             log.info("Matrix main loop started")
 
-            if not self._client: 
+            if not self._client:
                 # login
                 self._client = nio.AsyncClient(self.homeserver)
                 self._client.access_token = self.token
@@ -834,26 +860,30 @@ class MatrixBackend(ErrBot):
             return True
 
     def build_identifier(self, txt: str):
-        log.debug("getting identifier for: %s", txt) 
-        if txt[0] == '@':
-            person = MatrixPerson( txt, {} )
+        log.debug("getting identifier for: %s", txt)
+        if txt[0] == "@":
+            person = MatrixPerson(txt, {})
             person.stub = True
             return person
-        elif txt[0] == '!':
+        elif txt[0] == "!":
             if txt in self._client.rooms:
-                return MatrixRoom( txt, self._client )
-        elif txt[0] == '#':
+                return MatrixRoom(txt, self._client)
+        elif txt[0] == "#":
             for room in self._client.rooms.values():
                 if room.canonical_alias == txt:
-                    return MatrixRoom( room.room_id, self._client )
+                    return MatrixRoom(room.room_id, self._client)
         return None
 
     def build_message(self, txt):
         return MatrixMessage(body=txt)
 
-    def build_reply(self,
-            msg: backend.Message,
-            text:str = None, private: bool = False, threaded: bool = False) -> backend.Message:
+    def build_reply(
+        self,
+        msg: backend.Message,
+        text: str = None,
+        private: bool = False,
+        threaded: bool = False,
+    ) -> backend.Message:
         log.info(f"Tried to build reply: {msg} - {text} - {private} - {threaded}")
 
         response = self.build_message(text)
@@ -866,38 +896,44 @@ class MatrixBackend(ErrBot):
             response.to = msg.to
         return response
 
-    def change_presence(self, status: str = '', message: str = ''):
+    def change_presence(self, status: str = "", message: str = ""):
         log.debug("presence change requested")
         pass
 
     def send_message(self, msg: backend.Message):
         super().send_message(msg)
         log.info("sending message...")
-        future = asyncio.run_coroutine_threadsafe( self._async.send_message(msg), loop=self.loop )
+        future = asyncio.run_coroutine_threadsafe(
+            self._async.send_message(msg), loop=self.loop
+        )
         log.info("message submitted, result: %s", future.done)
-#        return future.result()
+
+    #        return future.result()
 
     def send_image(self, room, image_path):
-        future = asyncio.run_coroutine_threadsafe( self._async.send_image(room, image_path), loop=self.loop )
-
+        future = asyncio.run_coroutine_threadsafe(
+            self._async.send_image(room, image_path), loop=self.loop
+        )
 
     def react(self, msg: backend.Message, reaction):
         """React to an existing message.
 
         msg is the message your reacting to, not your response!"""
         log.info("sending reaction...")
-        asyncio.run_coroutine_threadsafe( self._async.send_reaction(msg, reaction), loop=self.loop )
+        asyncio.run_coroutine_threadsafe(
+            self._async.send_reaction(msg, reaction), loop=self.loop
+        )
 
     @property
     def mode(self):
-        return 'matrix'
+        return "matrix"
 
     def is_from_self(self, msg: backend.Message) -> bool:
         return msg.frm._id == self.bot_identifier._id
 
     def query_room(self, room: str):
-        log.info( f"{self._client.rooms.keys()}" )
-        return self.build_identifier( room )
+        log.info(f"{self._client.rooms.keys()}")
+        return self.build_identifier(room)
 
     async def _mtx_rooms(self) -> list:
         resp = await self._client.joined_rooms()
@@ -907,11 +943,10 @@ class MatrixBackend(ErrBot):
             for room_id in resp.rooms:
                 mtx_room = self._client.rooms[room_id]
                 if not mtx_room.is_group:
-                    rooms.append( self.build_identifier(room_id) )
+                    rooms.append(self.build_identifier(room_id))
 
         return rooms
-        
-    def rooms(self):
-        future = asyncio.run_coroutine_threadsafe( self._mtx_rooms(), loop=self.loop )
-        return future.result()
 
+    def rooms(self):
+        future = asyncio.run_coroutine_threadsafe(self._mtx_rooms(), loop=self.loop)
+        return future.result()
